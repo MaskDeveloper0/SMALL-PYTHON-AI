@@ -172,6 +172,3 @@ if __name__ == "__main__":
         else:
             answer = ask_ai(query)
             speak(answer)
-
-
-            
