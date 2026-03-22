@@ -3,25 +3,52 @@ import speech_recognition as sr
 import datetime
 import os
 import sys
+import subprocess
 import requests
 import webbrowser
+import shutil
 from google import genai
-from google.genai import types # For the Search Tool
+from google.genai import types
 import ollama
-from duckduckgo_search import DDGS # For Local AI Web Search
+from duckduckgo_search import DDGS
 
-# --- CONFIGURATION ---
-ASSISTANT_NAME = "Raj"
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
-LOCAL_MODEL = "llama3"
+# --- 1. SYSTEM ENVIRONMENT CHECK ---
+def check_environment():
+    print("--- System Diagnostic ---")
+    
+    # Check Python Version
+    py_version = sys.version.split()[0]
+    print(f"[✓] Python Version: {py_version}")
 
-# Initialize Gemini with GOOGLE_SEARCH tool enabled
-client = None
-if GEMINI_API_KEY and GEMINI_API_KEY != "YOUR_GEMINI_API_KEY":
+    # Check Ollama Status
+    ollama_ready = False
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        print(f"Gemini Init Error: {e}")
+        # Try to list models to see if the service is running
+        ollama.list()
+        print("[✓] Ollama Service: Running")
+        ollama_ready = True
+    except Exception:
+        print("[!] Ollama Service: Not found or not running. (Local AI disabled)")
+
+    # Check Gemini API
+    gemini_ready = False
+    api_key = "YOUR_GEMINI_API_KEY" # <--- Put your key here
+    if api_key and api_key != "YOUR_GEMINI_API_KEY":
+        print("[✓] Gemini API: Key Configured")
+        gemini_ready = True
+    else:
+        print("[!] Gemini API: Key missing. (Cloud AI disabled)")
+
+    return gemini_ready, ollama_ready, api_key
+
+# --- CONFIGURATION & INIT ---
+ASSISTANT_NAME = "Raj"
+GEMINI_READY, OLLAMA_READY, API_KEY = check_environment()
+
+# Initialize Gemini Client if possible
+client = None
+if GEMINI_READY:
+    client = genai.Client(api_key=API_KEY)
 
 # TTS Setup
 engine = pyttsx3.init()
@@ -42,70 +69,106 @@ def take_command():
             query = r.recognize_google(audio, language='en-in')
             print(f"User: {query}")
             return query.lower()
-        except: return "none"
+        except sr.UnknownValueError:
+            return "none"
+        except sr.RequestError:
+            print("Check your internet connection for speech recognition.")
+            return "none"
+        except Exception as e:
+            return "none"
 
-# --- WEB SEARCH FOR LOCAL OLLAMA ---
+# --- WEB SEARCH TOOLS ---
 def local_web_search(query):
-    """Fetches snippets from the web for the local model to read."""
-    with DDGS() as ddgs:
-        results = [r['body'] for r in ddgs.text(query, max_results=3)]
-        return "\n".join(results)
+    try:
+        with DDGS() as ddgs:
+            results = [r['body'] for r in ddgs.text(query, max_results=2)]
+            return "\n".join(results)
+    except:
+        return "No web results found."
 
-# --- AI BRAIN (With Search Capability) ---
+# --- AI BRAIN (Hybrid & Optional) ---
 def ask_ai(prompt):
-    # 1. Gemini Cloud with Built-in Google Search
-    if client:
+    # Option 1: Gemini (Highest Priority)
+    if GEMINI_READY and client:
         try:
-            # We tell Gemini it is allowed to use Google Search
             google_search_tool = types.Tool(google_search=types.GoogleSearch())
-            
             response = client.models.generate_content(
                 model="gemini-2.0-flash", 
                 contents=prompt,
                 config=types.GenerateContentConfig(tools=[google_search_tool])
             )
             return response.text
-        except Exception as e:
-            print(f"Gemini Search failed: {e}")
+        except Exception:
+            print("Gemini failed, falling back...")
 
-    # 2. Local Ollama with Manual Web Search
-    try:
-        speak("Searching the web locally...")
-        web_context = local_web_search(prompt)
-        combined_prompt = f"Using this info: {web_context}\n\nAnswer: {prompt}"
-        
-        response = ollama.chat(model=LOCAL_MODEL, messages=[
-            {'role': 'user', 'content': combined_prompt},
-        ])
-        return response['message']['content']
-    except Exception:
-        return "I can't access the web right now. Please check Ollama."
+    # Option 2: Local Ollama (Secondary)
+    if OLLAMA_READY:
+        try:
+            # Search web first for local context
+            context = local_web_search(prompt)
+            full_prompt = f"Context: {context}\n\nUser Question: {prompt}"
+            
+            response = ollama.chat(model='llama3', messages=[
+                {'role': 'user', 'content': full_prompt},
+            ])
+            return response['message']['content']
+        except Exception:
+            return "Local AI error. Is the model 'llama3' pulled?"
+
+    # Option 3: Basic fallback if NO AI is available
+    return "I'm sorry, both Gemini and Ollama are unavailable. I can only perform local system tasks."
+
+# --- FILE MANAGEMENT ---
+def manage_files(query):
+    if "create file" in query:
+        speak("Name of file?")
+        name = take_command()
+        if name != "none":
+            with open(name, "w") as f: f.write("")
+            speak(f"Created {name}")
+    elif "create folder" in query:
+        speak("Folder name?")
+        name = take_command()
+        if name != "none":
+            os.makedirs(name, exist_ok=True)
+            speak(f"Created folder {name}")
+    elif "delete" in query:
+        name = query.replace("delete", "").strip()
+        if os.path.exists(name):
+            os.remove(name) if os.path.isfile(name) else shutil.rmtree(name)
+            speak("Deleted.")
 
 # --- MAIN LOOP ---
 if __name__ == "__main__":
-    speak(f"Systems online. Web search enabled.")
+    # Final check before speaking
+    if not GEMINI_READY and not OLLAMA_READY:
+        print("\nWARNING: No AI brains available. Raj will work in 'Offline System Mode' only.")
+    
+    speak(f"Ready. I am {ASSISTANT_NAME}.")
 
     while True:
         query = take_command()
         if query == "none": continue
 
-        # File Management (Simplified trigger)
-        if any(word in query for word in ["file", "folder", "directory"]):
-            # (Insert the manage_files function code here)
-            pass
-
-        # Manual Website Opening
-        elif "open" in query and "google" not in query:
+        # 1. System Commands
+        if "time" in query:
+            speak(datetime.datetime.now().strftime("%I:%M %p"))
+        
+        elif "open" in query:
             site = query.replace("open", "").strip()
             webbrowser.open(f"https://{site}.com")
             speak(f"Opening {site}")
 
-        # Exit
+        # 2. File Operations
+        elif any(word in query for word in ["file", "folder", "directory", "delete"]):
+            manage_files(query)
+
+        # 3. Exit
         elif "exit" in query or "bye" in query:
-            speak("Goodbye!")
+            speak("Powering down.")
             break
 
-        # AI Research (The default for everything else)
+        # 4. AI Query (Only if one is available)
         else:
             answer = ask_ai(query)
             speak(answer)
