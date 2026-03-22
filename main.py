@@ -1,55 +1,88 @@
-import pyttsx3
-import speech_recognition as sr
-import datetime
 import os
 import sys
-import webbrowser
-import shutil
 import subprocess
+import datetime
+import shutil
+import webbrowser
+
+# --- 1. AUTO-DEPENDENCY INSTALLER (Runs first) ---
+def install_dependencies():
+    """Checks for required libraries and installs them if missing."""
+    required = [
+        "pyttsx3", 
+        "SpeechRecognition", 
+        "requests", 
+        "google-genai", 
+        "ollama", 
+        "duckduckgo-search", 
+        "AppOpener",
+        "pyaudio"
+    ]
+    
+    missing = []
+    for lib in required:
+        try:
+            if lib == "google-genai": import google.genai
+            elif lib == "duckduckgo-search": import duckduckgo_search
+            else: __import__(lib.lower() if lib != "SpeechRecognition" else "speech_recognition")
+        except ImportError:
+            missing.append(lib)
+
+    if missing:
+        print(f"\n[!] Missing dependencies: {', '.join(missing)}")
+        choice = input("Shall I install them for you? (y/n): ").lower()
+        if choice == 'y':
+            for lib in missing:
+                print(f"Installing {lib}...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", lib])
+            print("[✓] Installation complete. Restarting script...\n")
+            os.execv(sys.executable, ['python'] + sys.argv)
+        else:
+            print("[!] Exiting. Cannot run without these libraries.")
+            sys.exit()
+
+# Trigger Installer
+install_dependencies()
+
+# --- 2. IMPORTS (After check) ---
+import pyttsx3
+import speech_recognition as sr
 from AppOpener import open as open_app, close as close_app
 from google import genai
 from google.genai import types
 import ollama
 from duckduckgo_search import DDGS
 
-# --- 1. CONFIGURATION & DIAGNOSTICS ---
+# --- 3. CONFIGURATION & SYSTEM CHECK ---
 ASSISTANT_NAME = "Raj"
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"  # Replace with your actual key
-LOCAL_MODEL = "llama3"                  # The model you pulled in Ollama
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY" # <--- INSERT KEY HERE
+LOCAL_MODEL = "llama3"                  # Pull this in Ollama: 'ollama pull llama3'
 
-def check_env():
-    print(f"--- {ASSISTANT_NAME} System Check ---")
-    
-    # Check Python
-    print(f"[✓] Python: {sys.version.split()[0]}")
-
-    # Check Gemini
+def run_diagnostics():
+    print(f"--- {ASSISTANT_NAME} Diagnostic Mode ---")
     g_ready = False
     if GEMINI_API_KEY and GEMINI_API_KEY != "YOUR_GEMINI_API_KEY":
         g_ready = True
-        print("[✓] Gemini API: Configured")
+        print("[✓] Gemini AI: Configured")
     else:
-        print("[!] Gemini API: Missing (Cloud AI Disabled)")
+        print("[!] Gemini AI: Key Missing (Cloud AI disabled)")
 
-    # Check Ollama
     o_ready = False
     try:
         ollama.list()
         o_ready = True
-        print("[✓] Ollama: Running")
+        print("[✓] Ollama: Service Running")
     except:
-        print("[!] Ollama: Not found (Local AI Disabled)")
-
+        print("[!] Ollama: Not Found (Local AI disabled)")
+    
     return g_ready, o_ready
 
-GEMINI_READY, OLLAMA_READY = check_env()
+GEMINI_READY, OLLAMA_READY = run_diagnostics()
 
-# --- 2. INITIALIZATION ---
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_READY else None
+# --- 4. CORE ENGINE ---
 engine = pyttsx3.init()
-engine.setProperty('rate', 185)
-voices = engine.getProperty('voices')
-engine.setProperty('voice', voices[1].id if len(voices) > 1 else voices[0].id)
+engine.setProperty('rate', 190)
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_READY else None
 
 def speak(text):
     print(f"{ASSISTANT_NAME}: {text}")
@@ -60,30 +93,17 @@ def take_command():
     r = sr.Recognizer()
     with sr.Microphone() as source:
         print("Listening...")
-        r.adjust_for_ambient_noise(source, duration=0.7)
+        r.adjust_for_ambient_noise(source, duration=0.8)
         try:
             audio = r.listen(source, timeout=5, phrase_time_limit=8)
-            print("Recognizing...")
             query = r.recognize_google(audio, language='en-in')
             print(f"User: {query}")
             return query.lower()
-        except Exception:
-            return "none"
+        except: return "none"
 
-# --- 3. TOOLS & FEATURES ---
-
-def google_search_local(query):
-    """Fallback search for local AI using DuckDuckGo"""
-    try:
-        with DDGS() as ddgs:
-            results = [r['body'] for r in ddgs.text(query, max_results=2)]
-            return "\n".join(results)
-    except:
-        return ""
-
+# --- 5. AI BRAIN & TOOLS ---
 def ask_ai(prompt):
-    """Hybrid Brain: Gemini Cloud -> Ollama Local -> Error"""
-    # 1. Try Gemini with Google Search Tool
+    """Hybrid: Gemini (Cloud/Search) -> Ollama (Local/Scrape) -> Fallback"""
     if GEMINI_READY and client:
         try:
             search_tool = types.Tool(google_search=types.GoogleSearch())
@@ -93,89 +113,80 @@ def ask_ai(prompt):
                 config=types.GenerateContentConfig(tools=[search_tool])
             )
             return response.text
-        except:
-            print("Gemini failed, trying Ollama...")
+        except: pass
 
-    # 2. Try Ollama Local with Scraping
     if OLLAMA_READY:
         try:
-            context = google_search_local(prompt)
-            full_prompt = f"Search Context: {context}\n\nUser: {prompt}"
+            # Scrape web for local AI context
+            with DDGS() as ddgs:
+                results = [r['body'] for r in ddgs.text(prompt, max_results=1)]
+            context = results[0] if results else "No live info."
             res = ollama.chat(model=LOCAL_MODEL, messages=[
-                {'role': 'user', 'content': full_prompt}
+                {'role': 'user', 'content': f"Context: {context}\n\nQuestion: {prompt}"}
             ])
             return res['message']['content']
-        except:
-            return "Local AI is having trouble. Is the model loaded?"
+        except: return "Local AI is struggling. Check Ollama logs."
 
-    return "No AI brains available. Please check your API key or Ollama service."
+    return "No AI brain is active. I can only do system tasks."
 
 def manage_files(query):
-    """Create, Read, Delete Files/Folders"""
     if "create file" in query:
-        speak("What should I name the file?")
-        name = take_command()
+        speak("File name?")
+        name = take_command().replace(" ", "")
         if name != "none":
             with open(name, "w") as f: f.write("")
-            speak(f"File {name} created.")
-    
+            speak(f"File {name} is created.")
     elif "create folder" in query:
         speak("Folder name?")
         name = take_command()
         if name != "none":
             os.makedirs(name, exist_ok=True)
-            speak(f"Folder {name} created.")
-
+            speak(f"Folder {name} is ready.")
     elif "delete" in query:
         target = query.replace("delete", "").strip()
         if os.path.exists(target):
             if os.path.isfile(target): os.remove(target)
             else: shutil.rmtree(target)
-            speak(f"Deleted {target}.")
-        else:
-            speak("Target not found.")
+            speak("Target deleted.")
 
-# --- 4. MAIN CONTROLLER ---
+# --- 6. MAIN EXECUTION ---
 if __name__ == "__main__":
-    hour = datetime.datetime.now().hour
-    greet = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
-    speak(f"{greet} sir. Raj is online.")
+    speak(f"All systems active. I am {ASSISTANT_NAME}.")
 
     while True:
         query = take_command()
         if query == "none": continue
 
-        # A. LOCAL APP CONTROL (Notepad, Chrome, WhatsApp, etc.)
+        # Local App Control (Windows Apps)
         if "open" in query and "." not in query and "website" not in query:
-            app_name = query.replace("open", "").strip()
-            speak(f"Opening {app_name}")
-            open_app(app_name, match_closest=True)
+            app = query.replace("open", "").strip()
+            speak(f"Opening {app}")
+            open_app(app, match_closest=True)
 
         elif "close" in query:
-            app_name = query.replace("close", "").strip()
-            speak(f"Closing {app_name}")
-            close_app(app_name, match_closest=True)
+            app = query.replace("close", "").strip()
+            speak(f"Closing {app}")
+            close_app(app, match_closest=True)
 
-        # B. WEB BROWSING
+        # Web Browsing
         elif "open website" in query:
             site = query.replace("open website", "").strip()
             webbrowser.open(f"https://{site}")
             speak(f"Opening {site}")
 
-        # C. FILE MANAGEMENT
+        # File Operations
         elif any(w in query for w in ["file", "folder", "directory", "delete"]):
             manage_files(query)
 
-        # D. TIME
+        # System Tasks
         elif "time" in query:
             speak(datetime.datetime.now().strftime("%I:%M %p"))
 
-        # E. EXIT
-        elif any(w in query for w in ["exit", "stop", "offline", "bye"]):
-            speak("Powering down. Goodbye!")
-            sys.exit()
+        elif any(w in query for w in ["exit", "bye", "offline", "stop"]):
+            speak("Goodbye sir. Shutting down systems.")
+            break
 
-        # F. AI RESEARCH & CHAT (Default)
+        # AI Chat/Knowledge
         else:
             answer = ask_ai(query)
             speak(answer)
